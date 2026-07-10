@@ -73,7 +73,9 @@ body{display:flex;justify-content:center;align-items:center}
 .square.last-from,.square.last-to{background:var(--last-move) !important}
 .square.in-check{background:var(--check-color) !important;animation:check-pulse 1s ease infinite}
 @keyframes check-pulse{0%,100%{background:rgba(255,0,0,.4)}50%{background:rgba(255,0,0,.6)}}
-.square .piece{position:relative;z-index:2;pointer-events:none;line-height:1;text-shadow:0 1px 3px rgba(0,0,0,.2)}
+.square .piece{position:relative;z-index:2;pointer-events:none;line-height:1}
+.piece-white{color:#fff;text-shadow:0 0 3px rgba(0,0,0,.9),0 0 1px #000,1px 1px 0 #000,-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000}
+.piece-black{color:#1a1a1a;text-shadow:0 0 2px rgba(255,255,255,.3)}
 .square .promo-piece{position:absolute;z-index:10}
 .coord{position:absolute;font-size:9px;font-weight:700;pointer-events:none;z-index:3}
 .coord-file{bottom:2px;right:3px}
@@ -205,10 +207,10 @@ body{display:flex;justify-content:center;align-items:center}
       <div class="setting-row">
         <label>Dificuldade</label>
         <select id="difficulty" onchange="onDifficultyChange()">
-          <option value="1">Fácil (Prof. 2)</option>
+          <option value="1">Fácil (Prof. 3)</option>
           <option value="2" selected>Médio (Prof. 4)</option>
-          <option value="3">Difícil (Prof. 6)</option>
-          <option value="4">Expert (Prof. 8)</option>
+          <option value="3">Difícil (Prof. 5)</option>
+          <option value="4">Expert (Prof. 6)</option>
         </select>
       </div>
       <div class="setting-row">
@@ -695,92 +697,77 @@ function orderMoves(moves,bd){
   return moves.sort((a,b)=>scoreMove(b,bd)-scoreMove(a,bd));
 }
 
-function quiescence(bd,clr,alpha,beta,depth){
+function quiescence(bd,clr,ep,alpha,beta,depth){
   engineNodes++;
-  if(engineNodes%4096===0 && (Date.now()-engineStart)>50){return null} // abort signal
+  if(engineNodes%1024===0&&(Date.now()-engineStart)>engineTimeLimit) return 0;
 
   const standPat=evaluate(bd,clr);
-  if(depth<=0) return standPat;
   if(standPat>=beta) return beta;
-  if(standPat>alpha) alpha=standPat;
+  if(depth<=0) return standPat>alpha?standPat:alpha;
 
-  const moves=pseudoMoves(bd,clr,epSquare);
+  const moves=pseudoMoves(bd,clr,ep);
   const captures=moves.filter(m=>bd[m.tr][m.tc]||m.ep||m.promo);
   orderMoves(captures,bd);
 
-  for(const m of captures){
+  for(let i=0;i<captures.length&&i<10;i++){
+    const m=captures[i];
+    const capturedPiece=bd[m.tr][m.tc];
     if(m.promo&&m.promo.toUpperCase()!=='Q') continue;
+    if(!m.ep&&!m.promo&&capturedPiece){
+      const gain=PIECE_VAL[capturedPiece.toUpperCase()];
+      const loss=PIECE_VAL[bd[m.fr][m.fc].toUpperCase()];
+      if(standPat+gain-loss+200<alpha) continue;
+    }
     const nb=applyMove(bd,m);
     if(inCheck(nb,clr)) continue;
-    const opp=clr==='w'?'b':'w';
-    if(inCheck(nb,opp)) continue; // illegal
 
-    const score=-quiescence(nb,opp,-beta,-alpha,depth-1);
-    if(score===null) return null;
+    const nextEp=m.ep?null:null;
+    const score=-quiescence(nb,clr==='w'?'b':'w',nextEp,-beta,-alpha,depth-1);
     if(score>=beta) return beta;
     if(score>alpha) alpha=score;
   }
   return alpha;
 }
 
-function alphaBeta(bd,clr,depth,alpha,beta,isRoot){
+function alphaBeta(bd,clr,dep,ep,alpha,beta,isRoot){
   engineNodes++;
-  if(engineNodes%4096===0 && (Date.now()-engineStart)>150){return null}
+  if(engineNodes%1024===0&&(Date.now()-engineStart)>engineTimeLimit) return 0;
 
-  if(depth<=0){
-    return quiescence(bd,clr,alpha,beta,3);
-  }
+  if(dep<=0) return quiescence(bd,clr,ep,alpha,beta,2);
 
-  const moves=legalMoves(bd,clr,epSquare);
+  const moves=legalMoves(bd,clr,ep);
   if(moves.length===0){
-    if(inCheck(bd,clr)) return -20000+engineNodes%100; // checkmate (prefer shorter)
-    return 0; // stalemate
-  }
-
-  // Null move pruning (skip in check, skip root, skip in endgame)
-  if(!isRoot && depth>=3 && !inCheck(bd,clr)){
-    const phase=bd.flat().filter(Boolean).reduce((s,p)=>s+PHASE_VAL[p.toUpperCase()],0);
-    if(phase>4){
-      const R=2;
-      const opp=clr==='w'?'b':'w';
-      const nullMove=[]; // pass
-      const nb2=bd.map(r=>[...r]);
-      const savedEp=epSquare; epSquare=null;
-      const nullScore=-alphaBeta(nb2,opp,depth-1-R,-beta,-beta+1,false);
-      epSquare=savedEp;
-      if(nullScore===null) return null;
-      if(nullScore>=beta) return beta;
-    }
+    if(inCheck(bd,clr)) return -19999;
+    return 0;
   }
 
   if(!isRoot) orderMoves(moves,bd);
 
   let bestScore=-Infinity;
+  const opp=clr==='w'?'b':'w';
 
-  for(const m of moves){
+  for(let i=0;i<moves.length;i++){
+    const m=moves[i];
     const nb=applyMove(bd,m);
-    const opp=clr==='w'?'b':'w';
-    const givesCheck=inCheck(nb,opp);
+    const nextEp=m.ep?null:(movingPieceUp2(m,bd)?(FILES[m.fc]+''+(8-(m.fr+m.tr)/2)):null);
 
-    // Check extension
-    let newDepth=depth-1;
-    if(givesCheck) newDepth++;
-
-    const savedEp=epSquare;
-    if(m.ep) epSquare=null;
-    const score=-alphaBeta(nb,opp,newDepth,-beta,-alpha,false);
-    epSquare=savedEp;
-
-    if(score===null) return null;
+    let score;
+    if(i===0){
+      score=-alphaBeta(nb,opp,dep-1,nextEp,-beta,-alpha,false);
+    } else {
+      let reduction=0;
+      if(dep>=3&&i>=4&&!inCheck(bd,clr)&&!bd[m.tr][m.tc]&&!m.promo&&!m.ep) reduction=1;
+      score=-alphaBeta(nb,opp,dep-1-reduction,nextEp,-alpha-1,-alpha,false);
+      if(score>alpha&&score<beta) score=-alphaBeta(nb,opp,dep-1,nextEp,-beta,-alpha,false);
+    }
 
     if(score>bestScore) bestScore=score;
     if(score>alpha) alpha=score;
     if(alpha>=beta){
-      // Update killers
       if(!bd[m.tr][m.tc]){
         killerMoves[1][m.fr*8+m.fc]=killerMoves[0][m.fr*8+m.fc];
         killerMoves[0][m.fr*8+m.fc]={tr:m.tr,tc:m.tc};
-        historyTable[m.fr*8+m.fc][m.tr*8+m.tc]+=depth*depth;
+        historyTable[m.fr*8+m.fc][m.tr*8+m.tc]+=dep*dep;
       }
       return beta;
     }
@@ -788,39 +775,37 @@ function alphaBeta(bd,clr,depth,alpha,beta,isRoot){
   return bestScore;
 }
 
-// ─── Iterative Deepening ─────────────────────────────────
+function movingPieceUp2(m,bd){
+  const p=bd[m.fr][m.fc];
+  return p&&p.toUpperCase()==='P'&&Math.abs(m.tr-m.fr)===2;
+}
+
+let engineTimeLimit=2000;
+
 function findBestMove(bd,clr,maxDepth){
   initKillers();
   engineNodes=0;
   engineStart=Date.now();
-  abortEngine=false;
+  engineTimeLimit=maxDepth<=3?1500:maxDepth<=4?2000:maxDepth<=5?3000:4000;
 
-  const moves=legalMoves(bd,clr,epSquare);
+  const moves=legalMoves(bd,clr,null);
   if(moves.length===0) return null;
   if(moves.length===1) return moves[0];
 
   let bestMove=moves[0];
   let bestScore=-Infinity;
 
-  for(let depth=1;depth<=maxDepth;depth++){
+  for(let d=1;d<=maxDepth;d++){
     let currentBest=null;
     let currentScore=-Infinity;
-
-    // Order root moves with iterative deepening result
-    if(depth>1) orderMoves(moves,bd);
-
     let aborting=false;
+
     for(const m of moves){
       const nb=applyMove(bd,m);
       const opp=clr==='w'?'b':'w';
-      const savedEp=epSquare;
-      if(m.ep) epSquare=null;
-      let score;
-      if(depth===1) score=-alphaBeta(nb,opp,1,-Infinity,-Infinity+1,false);
-      else score=-alphaBeta(nb,opp,depth-1,-Infinity,-Infinity+1,false);
-      epSquare=savedEp;
-
-      if(score===null){aborting=true;break}
+      const nextEp=m.ep?null:(movingPieceUp2(m,bd)?(FILES[m.fc]+''+(8-(m.fr+m.tr)/2)):null);
+      const score=-alphaBeta(nb,opp,d-1,nextEp,-Infinity,-Infinity+1,false);
+      if(score===null||score===undefined){aborting=true;break}
       if(score>currentScore){currentScore=score;currentBest=m}
     }
 
@@ -831,16 +816,11 @@ function findBestMove(bd,clr,maxDepth){
     }
 
     const elapsed=Date.now()-engineStart;
-    updateEngineInfo(bestScore,depth,engineNodes,elapsed);
-
-    // Early exit if found forced mate or if time is running low
+    updateEngineInfo(bestScore,d,engineNodes,elapsed);
     if(Math.abs(bestScore)>19000) break;
-    if(depth>=2 && elapsed>5000) break;
+    if(elapsed>engineTimeLimit) break;
   }
 
-  const elapsed=Date.now()-engineStart;
-  const nps=Math.floor(engineNodes/(elapsed/1000)||0);
-  console.log(`Engine: depth=${maxDepth} nodes=${engineNodes} time=${elapsed}ms nps=${nps}`);
   return bestMove;
 }
 
@@ -969,7 +949,7 @@ function renderBoard(){
     // Piece
     if(piece){
       const sp=document.createElement('span');
-      sp.className='piece';
+      sp.className='piece '+(isWhite(piece)?'piece-white':'piece-black');
       sp.textContent=UNICODE[piece];
       sq.appendChild(sp);
     }
@@ -1007,7 +987,8 @@ function renderLabels(){
 function renderHistory(){
   const el=document.getElementById('move-history');
   el.innerHTML='';
-  for(let i=0;i<historyStack.length+1;i+=2){
+  const len=historyStack.length;
+  for(let i=0;i<len;i+=2){
     const row=document.createElement('div');row.className='move-row';
     const num=document.createElement('span');num.className='move-num';
     num.textContent=(Math.floor(i/2)+1)+'.';row.appendChild(num);
@@ -1033,9 +1014,9 @@ function updateCaptures(){
   const wExtra=wc.length>5?wc.length-5:0;
   const bExtra=bc.length>5?bc.length-5:0;
   document.getElementById('captures-white').innerHTML=
-    wc.slice(0,5).map(p=>`<span>${UNICODE[p]}</span>`).join('')+(wExtra?`<span class="extra">+${wExtra}</span>`:'');
+    wc.slice(0,5).map(p=>`<span class="piece-white">${UNICODE[p]}</span>`).join('')+(wExtra?`<span class="extra">+${wExtra}</span>`:'');
   document.getElementById('captures-black').innerHTML=
-    bc.slice(0,5).map(p=>`<span>${UNICODE[p]}</span>`).join('')+(bExtra?`<span class="extra">+${bExtra}</span>`:'');
+    bc.slice(0,5).map(p=>`<span class="piece-black">${UNICODE[p]}</span>`).join('')+(bExtra?`<span class="extra">+${bExtra}</span>`:'');
 }
 
 function setStatus(text,dotColor){
@@ -1129,6 +1110,8 @@ function showPromotionModal(moves){
     btn.className='promo-btn';
     const p=clr==='w'?t:t.toLowerCase();
     btn.textContent=UNICODE[p];
+    btn.style.color=clr==='w'?'#fff':'#1a1a1a';
+    btn.style.textShadow=clr==='w'?'0 0 3px rgba(0,0,0,.9),0 0 1px #000,1px 1px 0 #000,-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000':'0 0 2px rgba(255,255,255,.3)';
     btn.onclick=()=>{
       modal.classList.remove('visible');
       const m2=moves.find(mv=>mv.promo===p);
@@ -1142,10 +1125,7 @@ function showPromotionModal(moves){
 // ─── AI Turn ─────────────────────────────────────────────
 function triggerAIMove(){
   if(gameOver) return;
-  turn=turn==='w'?'b':'w'; // already switched by makeMove
-  turn=playerColor==='w'?'b':'w'; // ensure correct
-  // Actually turn was already flipped in makeMove. Let's just check.
-  if(turn===playerColor){renderBoard();return} // shouldn't happen
+  if(turn===playerColor){renderBoard();return}
 
   aiThinking=true;
   const overlay=document.getElementById('thinking-overlay');
@@ -1153,30 +1133,45 @@ function triggerAIMove(){
   document.getElementById('engine-info').style.display='block';
   updateStatus();
 
-  // Use setTimeout to let UI update
   setTimeout(()=>{
-    const aiColor=playerColor==='w'?'b':'w';
-    const bestMove=findBestMove(board,aiColor,difficulty);
+    try{
+      const aiColor=playerColor==='w'?'b':'w';
+      const bestMove=findBestMove(board,aiColor,difficulty);
 
-    aiThinking=false;
-    overlay.classList.remove('visible');
+      aiThinking=false;
+      overlay.classList.remove('visible');
 
-    if(!bestMove||gameOver){
-      checkGameOver();
+      if(!bestMove||gameOver){
+        checkGameOver();
+        renderBoard();
+        return;
+      }
+
+      const movingPiece=board[bestMove.fr][bestMove.fc];
+      const captured=board[bestMove.tr][bestMove.tc]||bestMove.ep?board[bestMove.fr][bestMove.tc]:null;
+      const san=moveToSAN(bestMove,movingPiece,captured||board[bestMove.tr][bestMove.tc],bestMove.promo);
+
+      makeMove(bestMove);
+      historyStack[historyStack.length-1].san=san;
+
       renderBoard();
-      return;
+      checkGameOver();
+    }catch(e){
+      console.error('Engine error:',e);
+      aiThinking=false;
+      overlay.classList.remove('visible');
+      // Make a random legal move as fallback
+      const aiColor=playerColor==='w'?'b':'w';
+      const fallbackMoves=legalMoves(board,aiColor,null);
+      if(fallbackMoves.length>0){
+        const m=fallbackMoves[Math.floor(Math.random()*fallbackMoves.length)];
+        makeMove(m);
+        historyStack[historyStack.length-1].san='...';
+      }
+      renderBoard();
+      checkGameOver();
     }
-
-    const movingPiece=board[bestMove.fr][bestMove.fc];
-    const captured=board[bestMove.tr][bestMove.tc]||bestMove.ep?board[bestMove.fr][bestMove.tc]:null;
-    const san=moveToSAN(bestMove,movingPiece,captured||board[bestMove.tr][bestMove.tc],bestMove.promo);
-
-    makeMove(bestMove);
-    historyStack[historyStack.length-1].san=san;
-
-    renderBoard();
-    checkGameOver();
-  },100);
+  },50);
 }
 
 // ─── Game Over ───────────────────────────────────────────
@@ -1305,7 +1300,7 @@ function onDifficultyChange(){
   const badges=document.getElementById('diff-badge');
   const labels={1:'FÁCIL',2:'MÉDIO',3:'DIFÍCIL',4:'EXPERT'};
   const classes={1:'easy',2:'medium',3:'hard',4:'expert'};
-  const depths={1:2,2:4,3:6,4:8};
+  const depths={1:3,2:4,3:5,4:6};
   difficulty=depths[+v];
   badges.textContent=labels[+v];
   badges.className='diff-badge '+classes[+v];
